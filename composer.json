@@ -1,0 +1,39 @@
+{
+    "name": "zalliant/ethernize-pulse",
+    "description": "Pulse: server-driven reactive components for Zalliant Ethernize.",
+    "type": "library",
+    "keywords": [
+        "ethernize",
+        "php",
+        "framework"
+    ],
+    "license": "MIT",
+    "require": {
+        "php": "^8.2",
+        "ext-filter": "*",
+        "ext-hash": "*",
+        "ext-json": "*",
+        "ext-mbstring": "*",
+        "zalliant/ethernize-core": "^0.1.0-beta.1",
+        "zalliant/ethernize-weave": "^0.1.0-beta.1"
+    },
+    "suggest": {
+        "ext-zlib": "Compresses large snapshots (they travel uncompressed without it)"
+    },
+    "autoload": {
+        "psr-4": {
+            "Ethernize\\Pulse\\": "src/"
+        }
+    },
+    "archive": {
+        "exclude": [
+            "/tests",
+            "/.gitattributes"
+        ]
+    },
+    "extra": {
+        "branch-alias": {
+            "dev-main": "0.1.x-dev"
+        }
+    }
+}
