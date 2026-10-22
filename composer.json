@@ -14,8 +14,8 @@
         "ext-hash": "*",
         "ext-json": "*",
         "ext-mbstring": "*",
-        "zalliant/ethernize-core": "^0.1.0-beta.2",
-        "zalliant/ethernize-weave": "^0.1.0-beta.2"
+        "zalliant/ethernize-core": "^0.1.0-beta.3",
+        "zalliant/ethernize-weave": "^0.1.0-beta.3"
     },
     "suggest": {
         "ext-zlib": "Compresses large snapshots (they travel uncompressed without it)"
