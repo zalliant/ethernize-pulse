@@ -14,7 +14,7 @@ use RuntimeException;
 final class ValidationFailed extends RuntimeException
 {
     /**
-     * @param array<string, list<string>> $errors
+     * @param array<string, mixed> $errors a list of messages per field, a tree for forms
      */
     public function __construct(public readonly array $errors)
     {

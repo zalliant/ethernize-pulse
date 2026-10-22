@@ -5,10 +5,12 @@ declare(strict_types=1);
 namespace Ethernize\Pulse\Rendering;
 
 use Ethernize\Core\Container\Container;
+use Ethernize\Core\Http\HttpException;
 use Ethernize\Pulse\Component;
 use Ethernize\Pulse\ComponentFactory;
 use Ethernize\Pulse\ComponentMetadata;
 use Ethernize\Pulse\ComponentRegistry;
+use Ethernize\Pulse\Exception\PulseException;
 use Ethernize\Pulse\Http\PulseEndpoint;
 use Ethernize\Pulse\Security\RevisionStore;
 use Ethernize\Pulse\Security\Snapshot;
@@ -100,6 +102,12 @@ final class ComponentRenderer implements NativeComponents
         $metadata = $this->factory->metadata($kebab);
         $this->factory->mount($component, $props);
         $component->pulseBoot();
+
+        try {
+            $this->factory->assertViewable($component, $metadata, $context->request());
+        } catch (PulseException) {
+            throw new HttpException(403);
+        }
 
         $rendered = $this->renderInstance($component, $metadata);
         $snapshot = new Snapshot($id, $kebab, $revision, $rendered['state'], RegionMap::fromRecorder($rendered['recorder']), SnapshotCodec::currentBucket());

@@ -8,6 +8,7 @@ use Ethernize\Core\Application;
 use Ethernize\Core\BootableProvider;
 use Ethernize\Core\Config\Environment;
 use Ethernize\Core\Container\Container;
+use Ethernize\Core\Http\CurrentRequest;
 use Ethernize\Pulse\Http\ContextMiddleware;
 use Ethernize\Pulse\Http\PulseEndpoint;
 use Ethernize\Pulse\Rendering\ComponentRenderer;
@@ -16,9 +17,16 @@ use Ethernize\Pulse\Security\FileRevisionStore;
 use Ethernize\Pulse\Security\KeyRing;
 use Ethernize\Pulse\Security\RevisionStore;
 use Ethernize\Pulse\Security\SnapshotCodec;
+use Ethernize\Pulse\SingleFile\PulseManifestContributor;
+use Ethernize\Pulse\SingleFile\SingleFileComponents;
+use Ethernize\Pulse\SingleFile\SingleFileTemplates;
 use Ethernize\Pulse\Support\RequestContext;
+use Ethernize\Pulse\Validation\Rule;
+use Ethernize\Pulse\Validation\Validator;
 use Ethernize\Weave\Runtime\NativeComponents;
+use Ethernize\Weave\Source\TemplateProviderRegistry;
 use InvalidArgumentException;
+use Psr\Http\Message\ServerRequestInterface;
 
 /**
  * Registers Pulse. Requires WeaveProvider.
@@ -33,11 +41,17 @@ use InvalidArgumentException;
  *                One of the two is required outside local/development/testing; there a random
  *                key is created in var/pulse/
  *   previous_keys  older keys still accepted for verification (rotation)
+ *   paths        directories scanned for single-file components (*.pulse.php), relative to the
+ *                application (default ["src/Pulse"]). With the Manifest nothing is scanned: the list is
+ *                taken from the build.
  *   path         endpoint prefix (default "/_pulse"); the runtime is served at "<path>/runtime.js"
  *   max_request_bytes   (default 131072)
  *   max_snapshot_bytes  (default 524288)
  *   max_depth           (default 8), max_nodes (default 50000)
  *   max_age_hours       snapshot lifetime (default 12)
+ *   max_inputs          most form values accepted in one request (default 100; forms with rows need more)
+ *   locale              language of the validation messages: "en" (default), "pt-BR", or an array of messages
+ *   validation.rules    map of rule name to a class implementing Validation\Rule, available in every component
  *
  * Register an implementation of Security\ActionAuthorizer in the container to
  * authorize actions declared with #[Action(authorize: '...')].
@@ -50,6 +64,36 @@ final class PulseProvider implements BootableProvider
     {
         $config = $app->config();
         $registry = new ComponentRegistry((array) $config->get('pulse.components', []));
+        $files = $this->singleFile($app);
+
+        if ($files->components() !== []) {
+            $files->register();
+
+            foreach ($files->components() as $name => $component) {
+                $registry->registerFile($name, $component['class']);
+            }
+
+            // Weave finds the template of a single-file component through this provider.
+            if ($container->has(TemplateProviderRegistry::class)) {
+                $container->get(TemplateProviderRegistry::class)->add(static fn (): SingleFileTemplates => new SingleFileTemplates($files));
+            }
+        }
+
+        $container->instance(SingleFileComponents::class, $files);
+        $container->singleton(Validator::class, static function () use ($config): Validator {
+            $locale = $config->get('pulse.locale', 'en');
+            $validator = new Validator(is_array($locale) ? $locale : (string) $locale);
+
+            foreach ((array) $config->get('pulse.validation.rules', []) as $name => $class) {
+                if (!is_string($class) || !class_exists($class) || !is_subclass_of($class, Rule::class)) {
+                    throw new InvalidArgumentException(sprintf('pulse.validation.rules.%s must name a class that implements %s.', (string) $name, Rule::class));
+                }
+
+                $validator->extend((string) $name, new $class());
+            }
+
+            return $validator;
+        });
         $path = '/' . trim((string) $config->get('pulse.path', '/_pulse'), '/');
 
         if (preg_match('~^/[A-Za-z0-9_/.-]+$~', $path) !== 1 || str_contains($path, '..')) {
@@ -57,7 +101,9 @@ final class PulseProvider implements BootableProvider
         }
 
         $container->instance(ComponentRegistry::class, $registry);
-        $container->scoped(RequestContext::class, static fn (): RequestContext => new RequestContext());
+        $container->scoped(RequestContext::class, static fn (): RequestContext => new RequestContext(
+            static fn (): ?ServerRequestInterface => $container->has(CurrentRequest::class) ? $container->get(CurrentRequest::class)->get() : null,
+        ));
         $container->singleton(SnapshotCodec::class, fn (): SnapshotCodec => new SnapshotCodec(
             $this->keys($app),
             (int) $config->get('pulse.max_snapshot_bytes', 524288),
@@ -98,6 +144,7 @@ final class PulseProvider implements BootableProvider
             $c->get(SnapshotCodec::class),
             $c->get(RevisionStore::class),
             $c->get(Differ::class),
+            maxInputs: (int) $config->get('pulse.max_inputs', 100),
         ));
         $container->singleton(PulseEndpoint::class, static fn (Container $c): PulseEndpoint => new PulseEndpoint(
             $c,
@@ -114,6 +161,33 @@ final class PulseProvider implements BootableProvider
         $app->router()->on($path)->post([PulseEndpoint::class, 'handle'])->name('pulse.endpoint');
         $app->router()->on($path . '/runtime.js')->get([PulseEndpoint::class, 'runtime'])->name('pulse.runtime');
         $app->addMiddleware(ContextMiddleware::class);
+        $app->addManifestContributor(new PulseManifestContributor($app->container()->get(SingleFileComponents::class)));
+    }
+
+    /**
+     * The single-file components of the application: scanned in development, read from the Manifest when compiled.
+     */
+    private function singleFile(Application $app): SingleFileComponents
+    {
+        $paths = [];
+
+        foreach ((array) $app->config()->get('pulse.paths', ['src/Pulse']) as $path) {
+            $normalized = trim(str_replace('\\', '/', (string) $path), '/');
+
+            if ($normalized === '' || preg_match('/^[A-Za-z]:/', $normalized) === 1 || in_array('..', explode('/', $normalized), true)) {
+                throw new InvalidArgumentException('pulse.paths must be directories relative to the application, without "..".');
+            }
+
+            $paths[] = $normalized;
+        }
+
+        if ($app->isCompiled()) {
+            $frozen = $app->manifest()?->extension(PulseManifestContributor::KEY)['components'] ?? [];
+
+            return new SingleFileComponents($app->basePath(), $paths, null, is_array($frozen) ? $frozen : []);
+        }
+
+        return new SingleFileComponents($app->basePath(), $paths, $app->basePath('var/cache/pulse/index.php'));
     }
 
     private function environment(Application $app, string $name): ?string

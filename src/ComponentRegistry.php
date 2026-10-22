@@ -56,6 +56,29 @@ final class ComponentRegistry
         $this->classes[$name] = $class;
     }
 
+    /**
+     * Registers a component that lives in a single file. Its class is loaded (and its declarations checked)
+     * the first time the component is used, not here: finding the components must not load them all.
+     *
+     * @param class-string<Component> $class
+     */
+    public function registerFile(string $name, string $class): void
+    {
+        if (preg_match(self::NAME_PATTERN, $name) !== 1) {
+            throw new InvalidArgumentException(sprintf('Invalid component name "%s". Use kebab-case, for example "todo-list".', $name));
+        }
+
+        if (isset($this->classes[$name]) && $this->classes[$name] !== $class) {
+            throw new InvalidArgumentException(sprintf('The component name "%s" is already registered.', $name));
+        }
+
+        if (self::pascal($name) === 'PulseScripts') {
+            throw new InvalidArgumentException(sprintf('"%s" is reserved.', $name));
+        }
+
+        $this->classes[$name] = $class;
+    }
+
     public function has(string $name): bool
     {
         return isset($this->classes[$name]);

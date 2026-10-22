@@ -78,6 +78,8 @@ final class ActionProcessor
         $component->errors = [];
         $component->pulseUseActionKey($key);
         $component->pulseBoot();
+        // Also for $refresh: a valid snapshot proves what Pulse issued, not that this request may still read it.
+        $this->factory->assertViewable($component, $metadata, $request);
         $this->factory->applyInputs($component, $metadata, $inputs);
 
         $this->run($component, $metadata, $action, $arguments, $request);
@@ -108,13 +110,7 @@ final class ActionProcessor
         ];
 
         // The server is authoritative for form fields: it returns the value of every #[Input] after the action.
-        $model = [];
-
-        foreach ($metadata->state as $name => $definition) {
-            if ($definition['writable']) {
-                $model[$name] = $rendered['state'][$name];
-            }
-        }
+        $model = $metadata->modelValues($rendered['state']);
 
         if ($model !== []) {
             $response['model'] = $model;

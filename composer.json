@@ -14,8 +14,8 @@
         "ext-hash": "*",
         "ext-json": "*",
         "ext-mbstring": "*",
-        "zalliant/ethernize-core": "^0.1.0-beta.1",
-        "zalliant/ethernize-weave": "^0.1.0-beta.1"
+        "zalliant/ethernize-core": "^0.1.0-beta.2",
+        "zalliant/ethernize-weave": "^0.1.0-beta.2"
     },
     "suggest": {
         "ext-zlib": "Compresses large snapshots (they travel uncompressed without it)"
@@ -34,6 +34,17 @@
     "extra": {
         "branch-alias": {
             "dev-main": "0.1.x-dev"
+        },
+        "ethernize": {
+            "commands": [
+                "Ethernize\\Pulse\\Cli\\MakePulseCommand"
+            ],
+            "resource-parts": [
+                "Ethernize\\Pulse\\Cli\\PulsePart"
+            ],
+            "doctor-checks": [
+                "Ethernize\\Pulse\\Cli\\PulseDoctorCheck"
+            ]
         }
     }
 }

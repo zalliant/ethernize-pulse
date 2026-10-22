@@ -27,10 +27,11 @@ use Psr\Http\Message\ServerRequestInterface;
 abstract class Component
 {
     /**
-     * Validation messages by field, rebuilt by every request. Exposed to the
-     * template as "errors". Never part of the snapshot.
+     * Validation messages by field, rebuilt by every request. Exposed to the template as "errors". Never
+     * part of the snapshot. A plain field has a list of messages; a Form property has a tree of them (see
+     * Form::validate()): errors.form.name, errors.form.lines[0].qty.
      *
-     * @var array<string, list<string>>
+     * @var array<string, mixed>
      */
     public array $errors = [];
 
@@ -38,6 +39,7 @@ abstract class Component
     private string $pulseName = '';
     private ?ServerRequestInterface $pulseRequest = null;
     private ?string $pulseActionKey = null;
+    private ?Validator $pulseValidator = null;
 
     protected function booted(): void
     {
@@ -68,6 +70,18 @@ abstract class Component
     }
 
     /**
+     * Called after booted() every time the component is mounted, restored from a snapshot or refreshed,
+     * before any input is applied or action runs. Return false to deny access to the component as a
+     * whole (the response is 403). It is the place for checks that depend on the component's own data;
+     * for a plain ability use #[Authorize('ability')] on the class. The snapshot is only proof that
+     * Pulse issued the state; it never replaces this check.
+     */
+    protected function authorizeView(): bool
+    {
+        return true;
+    }
+
+    /**
      * The current HTTP request, when one is available (for the authenticated user, for instance).
      */
     protected function request(): ?ServerRequestInterface
@@ -80,14 +94,21 @@ abstract class Component
      * messages are stored in $errors and the action stops; the component is
      * rendered again with the errors and the values the user typed.
      *
-     * @param array<string, string|list<string>> $rules property name => rules
+     * Rules are strings ("required|string|min:2") or lists that may hold rule objects and closures. Texts
+     * come from the language set in pulse.locale; change one with $messages ("name.required" for a field,
+     * "required" for every field) and the name shown for a field with $labels. validationMessages() and
+     * validationLabels() give a component defaults for both.
+     *
+     * @param array<string, string|list<string|\Ethernize\Pulse\Validation\Rule|\Closure>> $rules property name => rules
+     * @param array<string, string> $messages
+     * @param array<string, string> $labels
      * @return array<string, mixed>
      * @throws ValidationFailed
      */
-    protected function validate(array $rules): array
+    protected function validate(array $rules, array $messages = [], array $labels = []): array
     {
         $values = ComponentMetadata::for(static::class)->export($this);
-        [$clean, $errors] = Validator::validate($values, $rules);
+        [$clean, $errors] = ($this->pulseValidator ?? new Validator())->check($values, $rules, $messages + $this->validationMessages(), $labels + $this->validationLabels());
         $this->errors = $errors;
 
         if ($errors !== []) {
@@ -95,6 +116,54 @@ abstract class Component
         }
 
         return $clean;
+    }
+
+    /**
+     * Validates a Form property with the rules its class declares and returns its values. The messages go to
+     * $errors under the property's name, as a tree.
+     *
+     * @param array<string, string> $messages
+     * @param array<string, string> $labels
+     * @return array<string, mixed>
+     * @throws ValidationFailed
+     */
+    protected function validateForm(string $property, array $messages = [], array $labels = []): array
+    {
+        $form = ComponentMetadata::for(static::class)->state[$property]['type'] ?? null;
+
+        if ($form !== 'form') {
+            throw new \LogicException(sprintf('%s::$%s is not a Form property.', static::class, $property));
+        }
+
+        $this->errors = [];
+
+        try {
+            return (new \ReflectionProperty($this, $property))->getValue($this)->validate($this->pulseValidator ?? new Validator(), $messages + $this->validationMessages(), $labels + $this->validationLabels());
+        } catch (ValidationFailed $failed) {
+            $this->errors[$property] = $failed->errors;
+
+            throw $failed;
+        }
+    }
+
+    /**
+     * Texts that replace the default validation messages of this component: "field.rule" or "rule" => text.
+     *
+     * @return array<string, string>
+     */
+    protected function validationMessages(): array
+    {
+        return [];
+    }
+
+    /**
+     * How this component's fields are called in validation messages: field => label.
+     *
+     * @return array<string, string>
+     */
+    protected function validationLabels(): array
+    {
+        return [];
     }
 
     protected function addError(string $field, string $message): void
@@ -123,6 +192,14 @@ abstract class Component
     final public function pulseUseActionKey(?string $key): void
     {
         $this->pulseActionKey = $key;
+    }
+
+    /**
+     * @internal
+     */
+    final public function pulseUseValidator(Validator $validator): void
+    {
+        $this->pulseValidator = $validator;
     }
 
     /**
@@ -157,6 +234,14 @@ abstract class Component
     final public function pulseBoot(): void
     {
         $this->booted();
+    }
+
+    /**
+     * @internal
+     */
+    final public function pulseAuthorizeView(): bool
+    {
+        return $this->authorizeView();
     }
 
     /**

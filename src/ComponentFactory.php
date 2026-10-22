@@ -6,7 +6,9 @@ namespace Ethernize\Pulse;
 
 use Ethernize\Core\Container\Container;
 use Ethernize\Pulse\Exception\PulseException;
+use Ethernize\Pulse\Security\ActionAuthorizer;
 use Ethernize\Pulse\Support\Json;
+use Ethernize\Pulse\Validation\Validator;
 use InvalidArgumentException;
 use Psr\Http\Message\ServerRequestInterface;
 use ReflectionMethod;
@@ -46,8 +48,38 @@ final class ComponentFactory
         /** @var Component $component */
         $component = $this->container->get($class);
         $component->pulseAttach($id, $name, $request);
+        $component->pulseUseValidator($this->container->has(Validator::class) ? $this->container->get(Validator::class) : new Validator());
+
+        // A form property starts as an empty form unless mount() or the snapshot says otherwise.
+        foreach (ComponentMetadata::for($class)->state as $property => $definition) {
+            if ($definition['type'] === 'form' && !(new ReflectionProperty($component, $property))->isInitialized($component)) {
+                (new ReflectionProperty($component, $property))->setValue($component, new ($definition['class'])());
+            }
+        }
 
         return $component;
+    }
+
+    /**
+     * Decides whether the current request may see the component: the class-level ability and the
+     * authorizeView() hook. It runs on mount, on every action and on refresh, always against the request
+     * being served, never against the identity that was present when a snapshot was issued.
+     *
+     * @throws PulseException forbidden
+     */
+    public function assertViewable(Component $component, ComponentMetadata $metadata, ?ServerRequestInterface $request): void
+    {
+        if ($metadata->ability !== null) {
+            $authorizer = $this->container->has(ActionAuthorizer::class) ? $this->container->get(ActionAuthorizer::class) : null;
+
+            if (!$authorizer instanceof ActionAuthorizer || !$authorizer->allows($metadata->ability, $component, [], $request)) {
+                throw PulseException::forbidden();
+            }
+        }
+
+        if (!$component->pulseAuthorizeView()) {
+            throw PulseException::forbidden();
+        }
     }
 
     /**
@@ -115,12 +147,16 @@ final class ComponentFactory
                 'float' => is_float($value) || is_int($value),
                 'string' => is_string($value),
                 'bool' => is_bool($value),
-                'array' => is_array($value),
+                'array', 'form' => is_array($value),
             }) {
                 throw PulseException::invalidSnapshot();
             }
 
-            (new ReflectionProperty($component, $name))->setValue($component, $definition['type'] === 'float' && is_int($value) ? (float) $value : $value);
+            (new ReflectionProperty($component, $name))->setValue($component, match (true) {
+                $definition['type'] === 'form' => $definition['class']::fromState($value),
+                $definition['type'] === 'float' && is_int($value) => (float) $value,
+                default => $value,
+            });
         }
     }
 
@@ -134,6 +170,20 @@ final class ComponentFactory
     public function applyInputs(Component $component, ComponentMetadata $metadata, array $updates): void
     {
         foreach ($updates as $name => $value) {
+            // "form.name" and "form.lines.0.qty": a field of a form property, checked by the form itself.
+            if (str_contains((string) $name, '.')) {
+                [$property, $rest] = explode('.', (string) $name, 2);
+                $form = $metadata->state[$property] ?? null;
+
+                if ($form === null || $form['type'] !== 'form' || !$form['writable']) {
+                    throw PulseException::forbidden();
+                }
+
+                $reflection = new ReflectionProperty($component, $property);
+                $reflection->getValue($component)->set(explode('.', $rest), $value);
+                continue;
+            }
+
             $definition = $metadata->state[(string) $name] ?? null;
 
             if ($definition === null || !$definition['writable']) {

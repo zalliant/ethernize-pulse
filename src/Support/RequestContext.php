@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Ethernize\Pulse\Support;
 
+use Closure;
 use LogicException;
 use Psr\Http\Message\ServerRequestInterface;
 
@@ -18,6 +19,13 @@ final class RequestContext
     private string $basePath = '';
     private ?ServerRequestInterface $request = null;
     private bool $used = false;
+
+    /**
+     * @param (Closure(): ?ServerRequestInterface)|null $current resolves the request the route handler received
+     */
+    public function __construct(private readonly ?Closure $current = null)
+    {
+    }
 
     public function start(string $id, string $basePath, ServerRequestInterface $request): void
     {
@@ -45,9 +53,14 @@ final class RequestContext
         return $this->basePath;
     }
 
+    /**
+     * The request components are mounted with. It is the one that reached the route handler, after every
+     * middleware (Shield's authentication, for instance) enriched it, whatever the order the providers
+     * were registered in. The copy Pulse saw at the start is only the fallback.
+     */
     public function request(): ?ServerRequestInterface
     {
-        return $this->request;
+        return ($this->current !== null ? ($this->current)() : null) ?? $this->request;
     }
 
     /**

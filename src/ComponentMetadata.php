@@ -5,8 +5,11 @@ declare(strict_types=1);
 namespace Ethernize\Pulse;
 
 use Ethernize\Pulse\Attribute\Action;
+use Ethernize\Pulse\Attribute\Authorize;
 use Ethernize\Pulse\Attribute\Input;
 use Ethernize\Pulse\Attribute\State;
+use Ethernize\Pulse\Form\Form;
+use Ethernize\Pulse\Form\FormMetadata;
 use InvalidArgumentException;
 use ReflectionClass;
 use ReflectionMethod;
@@ -28,13 +31,14 @@ final class ComponentMetadata
     private static array $cache = [];
 
     /**
-     * @param array<string, array{type: string, nullable: bool, writable: bool, max: int}> $state
+     * @param array<string, array{type: string, nullable: bool, writable: bool, max: int, class: ?class-string<Form>}> $state
      * @param array<string, array{params: list<array{name: string, type: string, nullable: bool, hasDefault: bool, default: mixed}>, ability: ?string}> $actions
      */
     private function __construct(
         public readonly string $class,
         public readonly array $state,
         public readonly array $actions,
+        public readonly ?string $ability = null,
     ) {
     }
 
@@ -80,23 +84,34 @@ final class ComponentMetadata
 
             $type = $property->getType();
 
-            if (!$type instanceof ReflectionNamedType || !in_array($type->getName(), self::STATE_TYPES, true)) {
-                throw new InvalidArgumentException($where . ' must be typed int, float, string, bool or array (optionally nullable).');
+            $isForm = $type instanceof ReflectionNamedType && is_subclass_of($type->getName(), Form::class);
+
+            if ($isForm) {
+                if ($type->allowsNull()) {
+                    throw new InvalidArgumentException($where . ' is a form and cannot be nullable.');
+                }
+
+                FormMetadata::for($type->getName());
+            } elseif (!$type instanceof ReflectionNamedType || !in_array($type->getName(), self::STATE_TYPES, true)) {
+                throw new InvalidArgumentException($where . ' must be typed int, float, string, bool or array (optionally nullable), or be a Form.');
             }
 
-            if ($input !== null && !in_array($type->getName(), self::SCALAR_TYPES, true)) {
-                throw new InvalidArgumentException($where . ' is an #[Input] and must be int, float, string or bool.');
+            if ($input !== null && !$isForm && !in_array($type->getName(), self::SCALAR_TYPES, true)) {
+                throw new InvalidArgumentException($where . ' is an #[Input] and must be int, float, string or bool (or a Form).');
             }
 
             $state[$property->getName()] = [
-                'type' => $type->getName(),
+                'type' => $isForm ? 'form' : $type->getName(),
                 'nullable' => $type->allowsNull(),
                 'writable' => $input !== null,
-                'max' => $input !== null ? max(1, $input->newInstance()->max) : 0,
+                'max' => $input !== null && !$isForm ? max(1, $input->newInstance()->max) : 0,
+                'class' => $isForm ? $type->getName() : null,
             ];
         }
 
-        return new self($class, $state, self::actions($reflection));
+        $guard = $reflection->getAttributes(Authorize::class)[0] ?? null;
+
+        return new self($class, $state, self::actions($reflection), $guard?->newInstance()->ability);
     }
 
     /**
@@ -153,9 +168,37 @@ final class ComponentMetadata
 
         foreach (array_keys($this->state) as $name) {
             $property = new ReflectionProperty($component, $name);
-            $values[$name] = $property->isInitialized($component) ? $property->getValue($component) : null;
+            $value = $property->isInitialized($component) ? $property->getValue($component) : null;
+            $values[$name] = $value instanceof Form ? $value->toState() : $value;
         }
 
         return $values;
+    }
+
+    /**
+     * The values of the writable properties as pulse:model names know them: "title" for a property, and
+     * "form.name" or "form.lines.0.qty" for the fields of a form. The browser shows these after an action.
+     *
+     * @param array<string, mixed> $state the exported state
+     * @return array<string, mixed>
+     */
+    public function modelValues(array $state): array
+    {
+        $model = [];
+
+        foreach ($this->state as $name => $definition) {
+            if (!$definition['writable']) {
+                continue;
+            }
+
+            if ($definition['type'] === 'form') {
+                $form = $definition['class']::fromState((array) ($state[$name] ?? []));
+                $model += $form->flatten($name);
+            } else {
+                $model[$name] = $state[$name];
+            }
+        }
+
+        return $model;
     }
 }
